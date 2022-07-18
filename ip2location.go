@@ -263,7 +263,8 @@ func (d *DB) readuint32_row(row []byte, pos uint32) uint32 {
 func (d *DB) readuint32(pos uint32) (uint32, error) {
 	pos2 := int64(pos)
 	var retval uint32
-	data := make([]byte, 4)
+	data := getFourBytes()
+	defer putFourBytes(data)
 	_, err := d.f.ReadAt(data, pos2-1)
 	if err != nil {
 		return 0, err
@@ -830,11 +831,10 @@ func (d *DB) Get_category(ipaddress string) (IP2Locationrecord, error) {
 
 // main query
 func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
-	x := loadmessage(not_supported) // default message
+	var x IP2Locationrecord
 
 	// read metadata
 	if !d.metaok {
-		x = loadmessage(missing_file)
 		return x, nil
 	}
 
@@ -842,7 +842,6 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 	iptype, ipno, ipindex := d.checkip(ipaddress)
 
 	if iptype == 0 {
-		x = loadmessage(invalid_address)
 		return x, nil
 	}
 
@@ -897,7 +896,6 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 				return x, err
 			}
 			ipfrom = big.NewInt(int64(ipfrom32))
-
 			ipto32, err := d.readuint32(rowoffset2)
 			if err != nil {
 				return x, err
