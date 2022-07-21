@@ -144,15 +144,15 @@ var category_position = [26]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
 const api_version string = "9.1.0"
 
-var max_ipv4_range = big.NewInt(4294967295)
-var max_ipv6_range = big.NewInt(0)
-var from_v4mapped = big.NewInt(281470681743360)
-var to_v4mapped = big.NewInt(281474976710655)
-var from_6to4 = big.NewInt(0)
-var to_6to4 = big.NewInt(0)
-var from_teredo = big.NewInt(0)
-var to_teredo = big.NewInt(0)
-var last_32bits = big.NewInt(4294967295)
+var max_ipv4_range = proxy.NewInt(4294967295)
+var max_ipv6_range = proxy.NewInt(0)
+var from_v4mapped = proxy.NewInt(281470681743360)
+var to_v4mapped = proxy.NewInt(281474976710655)
+var from_6to4 = proxy.NewInt(0)
+var to_6to4 = proxy.NewInt(0)
+var from_teredo = proxy.NewInt(0)
+var to_teredo = proxy.NewInt(0)
+var last_32bits = proxy.NewInt(4294967295)
 
 const countryshort uint32 = 0x000001
 const countrylong uint32 = 0x000002
@@ -187,10 +187,16 @@ const invalid_bin string = "Incorrect IP2Location BIN file format. Please make s
 // get IP type and calculate IP number; calculates index too if exists
 func (d *DB) checkip(ip string) (iptype uint32, ipnum *big.Int, ipindex uint32) {
 	iptype = 0
-	ipnum = big.NewInt(0)
-	ipnumtmp := big.NewInt(0)
+	ipnum = proxy.NewInt(0)
+	ipnumtmp := proxy.NewInt(0)
 	ipindex = 0
 	ipaddress := net.ParseIP(ip)
+	var indexbaseaddr *big.Int
+
+	defer func() {
+		proxy.RecycleInt(indexbaseaddr)
+		proxy.RecycleInt(ipnumtmp)
+	}()
 
 	if ipaddress != nil {
 		v4 := ipaddress.To4()
@@ -225,15 +231,17 @@ func (d *DB) checkip(ip string) (iptype uint32, ipnum *big.Int, ipindex uint32) 
 	}
 	if iptype == 4 {
 		if d.meta.ipv4indexbaseaddr > 0 {
+			indexbaseaddr = proxy.NewInt(int64(d.meta.ipv4indexbaseaddr))
 			ipnumtmp.Rsh(ipnum, 16)
 			ipnumtmp.Lsh(ipnumtmp, 3)
-			ipindex = uint32(ipnumtmp.Add(ipnumtmp, big.NewInt(int64(d.meta.ipv4indexbaseaddr))).Uint64())
+			ipindex = uint32(ipnumtmp.Add(ipnumtmp, indexbaseaddr).Uint64())
 		}
 	} else if iptype == 6 {
 		if d.meta.ipv6indexbaseaddr > 0 {
+			indexbaseaddr = proxy.NewInt(int64(d.meta.ipv6indexbaseaddr))
 			ipnumtmp.Rsh(ipnum, 112)
 			ipnumtmp.Lsh(ipnumtmp, 3)
-			ipindex = uint32(ipnumtmp.Add(ipnumtmp, big.NewInt(int64(d.meta.ipv6indexbaseaddr))).Uint64())
+			ipindex = uint32(ipnumtmp.Add(ipnumtmp, indexbaseaddr).Uint64())
 		}
 	}
 	return
@@ -280,7 +288,7 @@ func (d *DB) readuint32(pos uint32) (uint32, error) {
 // read unsigned 128-bit integer
 func (d *DB) readuint128(pos uint32) (*big.Int, error) {
 	pos2 := int64(pos)
-	retval := big.NewInt(0)
+	retval := proxy.NewInt(0)
 	data := make([]byte, 16)
 	_, err := d.f.ReadAt(data, pos2-1)
 	if err != nil {
@@ -853,9 +861,9 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 	var mid uint32
 	var rowoffset uint32
 	var rowoffset2 uint32
-	ipfrom := big.NewInt(0)
-	ipto := big.NewInt(0)
-	maxip := big.NewInt(0)
+	var ipfrom *big.Int
+	var ipto *big.Int
+	var maxip *big.Int
 
 	if iptype == 4 {
 		baseaddr = d.meta.ipv4databaseaddr
@@ -882,7 +890,7 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 	}
 
 	if ipno.Cmp(maxip) >= 0 {
-		ipno.Sub(ipno, big.NewInt(1))
+		ipno.Sub(ipno, bigInt1)
 	}
 
 	for low <= high {
@@ -895,12 +903,12 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 			if err != nil {
 				return x, err
 			}
-			ipfrom = big.NewInt(int64(ipfrom32))
+			ipfrom = proxy.NewInt(int64(ipfrom32))
 			ipto32, err := d.readuint32(rowoffset2)
 			if err != nil {
 				return x, err
 			}
-			ipto = big.NewInt(int64(ipto32))
+			ipto = proxy.NewInt(int64(ipto32))
 
 		} else {
 			ipfrom, err = d.readuint128(rowoffset)
@@ -1057,7 +1065,6 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 					return x, err
 				}
 			}
-
 			return x, nil
 		} else {
 			if ipno.Cmp(ipfrom) < 0 {
@@ -1066,6 +1073,8 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 				low = mid + 1
 			}
 		}
+		proxy.RecycleInt(ipto)
+		proxy.RecycleInt(ipfrom)
 	}
 	return x, nil
 }
