@@ -858,7 +858,7 @@ func (d *DB) Get_category(ipaddress string) (IP2Locationrecord, error) {
 // a copy of query with logic for unnecessary fields deleted
 // change queryADX when update ip2Location!!
 func (d *DB) queryADX(ipaddress string, mode uint32) (*ADXIP2Locationrecord, error) {
-	x := GetRecord()
+	x := new(ADXIP2Locationrecord)
 	// read metadata
 	if !d.metaok {
 		return x, nil
