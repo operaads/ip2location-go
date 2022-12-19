@@ -67,6 +67,25 @@ type IP2Locationrecord struct {
 	Category           string
 }
 
+// ADXIP2Locationrecord  Expose fields needed by ADX rather than all fields to reduce memory usage
+type ADXIP2Locationrecord struct {
+	Country_short      string
+	Region             string
+	City               string
+	Latitude           float32
+	Longitude          float32
+	Zipcode            string
+}
+
+func (r *ADXIP2Locationrecord) reset() {
+	r.Country_short = ""
+	r.Region = ""
+	r.City = ""
+	r.Latitude = 0
+	r.Longitude = 0
+	r.Zipcode = ""
+}
+
 type DB struct {
 	f    DBReader
 	meta ip2locationmeta
@@ -714,6 +733,12 @@ func Get_usagetype(ipaddress string) IP2Locationrecord {
 	return handleError(defaultDB.query(ipaddress, usagetype))
 }
 
+// Get_AdxFields only get what is needed for ADX to reduce redundant computation and memory usage
+// the caller should use RecycleRecord to release memory usage
+func (d *DB) Get_AdxFields(ipaddress string) (*ADXIP2Locationrecord, error) {
+	return d.queryADX(ipaddress, countryshort | region | city | latitude | longitude | zipcode)
+}
+
 // Get_all will return all geolocation fields based on the queried IP address.
 func (d *DB) Get_all(ipaddress string) (IP2Locationrecord, error) {
 	return d.query(ipaddress, all)
@@ -828,6 +853,151 @@ func (d *DB) Get_addresstype(ipaddress string) (IP2Locationrecord, error) {
 func (d *DB) Get_category(ipaddress string) (IP2Locationrecord, error) {
 	return d.query(ipaddress, category)
 }
+
+
+// a copy of query with logic for unnecessary fields deleted
+// change queryADX when update ip2Location!!
+func (d *DB) queryADX(ipaddress string, mode uint32) (*ADXIP2Locationrecord, error) {
+	x := GetRecord()
+	// read metadata
+	if !d.metaok {
+		return x, nil
+	}
+
+	// check IP type and return IP number & index (if exists)
+	iptype, ipno, ipindex := d.checkip(ipaddress)
+
+	if iptype == 0 {
+		return x, nil
+	}
+
+	var err error
+	var colsize uint32
+	var baseaddr uint32
+	var low uint32
+	var high uint32
+	var mid uint32
+	var rowoffset uint32
+	var rowoffset2 uint32
+	ipfrom := big.NewInt(0)
+	ipto := big.NewInt(0)
+	maxip := big.NewInt(0)
+
+	if iptype == 4 {
+		baseaddr = d.meta.ipv4databaseaddr
+		high = d.meta.ipv4databasecount
+		maxip = max_ipv4_range
+		colsize = d.meta.ipv4columnsize
+	} else {
+		baseaddr = d.meta.ipv6databaseaddr
+		high = d.meta.ipv6databasecount
+		maxip = max_ipv6_range
+		colsize = d.meta.ipv6columnsize
+	}
+
+	// reading index
+	if ipindex > 0 {
+		low, err = d.readuint32(ipindex)
+		if err != nil {
+			return x, err
+		}
+		high, err = d.readuint32(ipindex + 4)
+		if err != nil {
+			return x, err
+		}
+	}
+
+	if ipno.Cmp(maxip) >= 0 {
+		ipno.Sub(ipno, big.NewInt(1))
+	}
+
+	for low <= high {
+		mid = ((low + high) >> 1)
+		rowoffset = baseaddr + (mid * colsize)
+		rowoffset2 = rowoffset + colsize
+
+		if iptype == 4 {
+			ipfrom32, err := d.readuint32(rowoffset)
+			if err != nil {
+				return x, err
+			}
+			ipfrom = big.NewInt(int64(ipfrom32))
+			ipto32, err := d.readuint32(rowoffset2)
+			if err != nil {
+				return x, err
+			}
+			ipto = big.NewInt(int64(ipto32))
+
+		} else {
+			ipfrom, err = d.readuint128(rowoffset)
+			if err != nil {
+				return x, err
+			}
+
+			ipto, err = d.readuint128(rowoffset2)
+			if err != nil {
+				return x, err
+			}
+		}
+
+		if ipno.Cmp(ipfrom) >= 0 && ipno.Cmp(ipto) < 0 {
+			var firstcol uint32 = 4 // 4 bytes for ip from
+			if iptype == 6 {
+				firstcol = 16 // 16 bytes for ipv6
+			}
+
+			row := make([]byte, colsize-firstcol) // exclude the ip from field
+			_, err := d.f.ReadAt(row, int64(rowoffset+firstcol-1))
+			if err != nil {
+				return x, err
+			}
+
+			if mode&countryshort == 1 && d.country_enabled {
+				if x.Country_short, err = d.readstr(d.readuint32_row(row, d.country_position_offset)); err != nil {
+					return x, err
+				}
+			}
+
+			if mode&region != 0 && d.region_enabled {
+				if x.Region, err = d.readstr(d.readuint32_row(row, d.region_position_offset)); err != nil {
+					return x, err
+				}
+			}
+
+			if mode&city != 0 && d.city_enabled {
+				if x.City, err = d.readstr(d.readuint32_row(row, d.city_position_offset)); err != nil {
+					return x, err
+				}
+			}
+
+			if mode&latitude != 0 && d.latitude_enabled {
+				x.Latitude = d.readfloat_row(row, d.latitude_position_offset)
+			}
+
+			if mode&longitude != 0 && d.longitude_enabled {
+				x.Longitude = d.readfloat_row(row, d.longitude_position_offset)
+			}
+
+
+			if mode&zipcode != 0 && d.zipcode_enabled {
+				if x.Zipcode, err = d.readstr(d.readuint32_row(row, d.zipcode_position_offset)); err != nil {
+					return x, err
+				}
+			}
+
+			return x, nil
+		} else {
+			if ipno.Cmp(ipfrom) < 0 {
+				high = mid - 1
+			} else {
+				low = mid + 1
+			}
+		}
+	}
+	return x, nil
+}
+
+
 
 // main query
 func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
@@ -1069,7 +1239,6 @@ func (d *DB) query(ipaddress string, mode uint32) (IP2Locationrecord, error) {
 	}
 	return x, nil
 }
-
 func (d *DB) Close() {
 	_ = d.f.Close()
 }
