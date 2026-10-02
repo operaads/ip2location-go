@@ -24,6 +24,16 @@ type DBReader interface {
 	io.ReaderAt
 }
 
+// ReadOnlyMemoryReader optionally exposes a complete database in Go-managed
+// memory. OpenDBWithReader detects this capability once. A nil slice opts out.
+// The bytes must never be modified, reused, or invalidated by Close: query
+// results may reference them for as long as the returned strings are reachable.
+// Memory-mapped regions and reusable read buffers do not satisfy this contract.
+type ReadOnlyMemoryReader interface {
+	DBReader
+	ReadOnlyBytes() []byte
+}
+
 type ip2locationmeta struct {
 	databasetype      uint8
 	databasecolumn    uint8
@@ -79,8 +89,9 @@ type IP2Locationrecord struct {
 }
 
 type DB struct {
-	f    DBReader
-	meta ip2locationmeta
+	f      DBReader
+	meta   ip2locationmeta
+	memory []byte
 
 	country_position_offset            uint32
 	region_position_offset             uint32
@@ -296,6 +307,12 @@ func (d *DB) readuint8(pos int64) (uint8, error) {
 
 // read row
 func (d *DB) read_row(pos uint32, size uint32) ([]byte, error) {
+	if d.memory != nil {
+		offset := int64(pos) - 1
+		if offset >= 0 && offset < int64(len(d.memory)) && int64(size) <= int64(len(d.memory))-offset {
+			return d.memory[offset : offset+int64(size)], nil
+		}
+	}
 	pos2 := int64(pos)
 	data := make([]byte, size)
 	_, err := d.f.ReadAt(data, pos2-1)
@@ -363,6 +380,17 @@ func (d *DB) readuint128(pos uint32) (uint128.Uint128, error) {
 
 // read string
 func (d *DB) readstr(pos uint32) (string, error) {
+	if d.memory != nil {
+		offset := uint64(pos)
+		if offset < uint64(len(d.memory)) {
+			strlen := d.memory[offset]
+			end := offset + 1 + uint64(strlen)
+			if end <= uint64(len(d.memory)) {
+				data := d.memory[offset:end]
+				return convertBytesToString(data[1:(strlen + 1)]), nil
+			}
+		}
+	}
 	pos2 := int64(pos)
 	readlen := 256 // max size of string field + 1 byte for the length
 	var retval string
@@ -427,6 +455,9 @@ func OpenDBWithReader(reader DBReader) (*DB, error) {
 	to_teredo = uint128.FromBig(_to_teredo)
 
 	db.f = reader
+	if memoryReader, ok := reader.(ReadOnlyMemoryReader); ok {
+		db.memory = memoryReader.ReadOnlyBytes()
+	}
 
 	var row []byte
 	var err error
